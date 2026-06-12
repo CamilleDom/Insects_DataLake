@@ -2,11 +2,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including build tools for pip packages)
 RUN apt-get update && apt-get install -y \
+    build-essential \
     gcc \
+    g++ \
+    cmake \
+    python3-dev \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip, setuptools, and wheel
+RUN pip install --upgrade pip setuptools wheel
 
 # Copy requirements
 COPY requirements.txt .
