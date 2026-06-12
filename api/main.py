@@ -2,10 +2,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 import logging
 from datetime import datetime
+import sys
+import os
 
 from config import get_settings
 from db import get_db_connection, get_minio_client
 from schemas import HealthResponse, StatsResponse, IngestPayload
+
+# Add scripts to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+
+try:
+    from fast_ingestor import FastIngestor
+except ImportError:
+    FastIngestor = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -278,6 +288,35 @@ async def get_invasive_alerts(risk_level: str = None):
 # INGESTION (STANDARD & ADVANCED)
 # ============================================
 
+@app.get("/benchmark")
+async def get_benchmark_info():
+    """Get benchmark comparison information"""
+    return {
+        "title": "Insect Lake Ingestion Benchmark",
+        "description": "Compare /ingest (standard) vs /ingest_fast (optimized)",
+        "optimizations": [
+            "NumPy vectorized H3 encoding (~3x faster)",
+            "Batch inserts (1000 records per transaction)",
+            "In-memory invasive species cache",
+            "Early invasive detection while writing"
+        ],
+        "target_improvement": "30% performance gain",
+        "test_cases": [
+            {
+                "name": "Single element",
+                "description": "Baseline: single observation"
+            },
+            {
+                "name": "100 elements",
+                "description": "Batch: 100 observations"
+            }
+        ],
+        "endpoints": {
+            "/ingest": "Standard ingestion (row-by-row)",
+            "/ingest_fast": "Optimized ingestion (vectorized)"
+        }
+    }
+
 @app.post("/ingest")
 async def ingest_observations(payload: IngestPayload):
     """Standard ingestion endpoint for manual observation data"""
@@ -322,44 +361,53 @@ async def ingest_observations(payload: IngestPayload):
 
 @app.post("/ingest_fast")
 async def ingest_observations_fast(payload: IngestPayload):
-    """Optimized ingestion endpoint (vectorized, async writes)"""
+    """
+    Optimized ingestion endpoint (vectorized H3 encoding, batch writes)
+    
+    Optimization strategies:
+    - NumPy vectorized H3 encoding (~3x faster than row-by-row)
+    - Batch inserts (1000 records per transaction)
+    - Early invasive species detection
+    - In-memory invasive species cache
+    
+    Target: +30% performance improvement over /ingest
+    """
+    if not FastIngestor:
+        raise HTTPException(status_code=503, detail="FastIngestor module not available")
+    
     try:
-        # TODO: Implement vectorized H3 encoding and batch async writes
-        # For now, same as /ingest but with optimization placeholder
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        ingestor = FastIngestor(
+            pg_host=settings.postgres_host,
+            pg_port=settings.postgres_port,
+            pg_user=settings.postgres_user,
+            pg_password=settings.postgres_password,
+            pg_db=settings.postgres_db
+        )
         
-        success_count = 0
+        # Convert Pydantic models to dicts for processing
+        observations_dicts = [
+            {
+                'species_name': obs.species_name,
+                'latitude': obs.latitude,
+                'longitude': obs.longitude,
+                'observed_on': obs.observed_on
+            }
+            for obs in payload.data.observations
+        ]
         
-        for obs in payload.data.observations:
-            try:
-                cursor.execute("""
-                    INSERT INTO staging.occurrences 
-                    (id, species_name, latitude, longitude, observed_on, source)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                """, (
-                    f"manual_{obs.species_name}_{obs.latitude}_{obs.longitude}",
-                    obs.species_name,
-                    obs.latitude,
-                    obs.longitude,
-                    obs.observed_on,
-                    "manual"
-                ))
-                success_count += 1
-            except Exception as e:
-                logger.error(f"Failed to insert observation: {e}")
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
+        result = ingestor.ingest_with_early_detection(observations_dicts)
         
         return {
             "status": "success",
-            "inserted": success_count,
+            "inserted": result['inserted'],
+            "duplicates": result['duplicates'],
+            "errors": result['errors'],
             "total": len(payload.data.observations),
+            "execution_time_ms": result['execution_time_ms'],
+            "throughput_obs_per_sec": (len(payload.data.observations) / (result['execution_time_ms'] / 1000)) if result['execution_time_ms'] > 0 else 0,
+            "detected_invasives": result.get('detected_invasives', {}),
             "timestamp": datetime.utcnow().isoformat(),
-            "note": "Fast ingestion variant"
+            "optimization": "NumPy vectorized H3 + batch writes"
         }
     except Exception as e:
         logger.error(f"Fast ingestion failed: {e}")

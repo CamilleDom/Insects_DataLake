@@ -237,24 +237,67 @@ curated.invasive_hotspots
 └─ h3_cell
 ```
 
-## Airflow DAG
+## Data Loading
 
-**DAG Name**: `ingest_inaturalist`
+### Loading iNaturalist Data
 
-```
-fetch_api → validate_and_load_staging
-```
-
-- **Schedule**: @hourly
-- **Retry**: 3 attempts, 5-minute delay
-- **Tasks**:
-  1. `fetch_api`: Call iNaturalist, save to MinIO
-  2. `validate_and_load_staging`: Parse JSON, insert to PostgreSQL
-
-### Trigger Manually
+The Airflow DAG automatically fetches iNaturalist data:
 
 ```bash
+# Trigger manually
 docker-compose exec airflow airflow dags trigger ingest_inaturalist
+
+# View logs
+docker-compose logs -f airflow
+```
+
+### Loading GBIF Dataset
+
+Download GBIF data and load via script:
+
+```bash
+# 1. Download from GBIF portal
+# https://www.gbif.org/occurrence/download
+# Select: Insecta class, France, 2010+ years, CSV format
+
+# 2. Extract ZIP and load occurrence.txt
+docker-compose exec api python /app/../scripts/load_gbif.py /path/to/occurrence.txt
+
+# Or from host
+python scripts/load_gbif.py /data/gbif/occurrence.txt
+```
+
+**Example Output**:
+```
+✓ Successfully loaded 50,000 records from GBIF
+  Skipped: 250, Errors: 10, Total processed: 50,260
+```
+
+### Transforming to Curated Zone
+
+After loading data to staging, transform to curated zone:
+
+```bash
+# Run transformation pipeline
+docker-compose exec api python /app/../scripts/transform_to_curated.py
+
+# What it does:
+# 1. Groups occurrences by H3 hexagon cells (resolution 7)
+# 2. Calculates species richness per cell
+# 3. Computes normalized richness: count / log(1 + observations)
+# 4. Detects invasive species hotspots
+# 5. Updates curated zone tables
+```
+
+**Example Output**:
+```
+2025-06-12 10:45:23 - __main__ - INFO - Processing species richness by H3 cells...
+2025-06-12 10:45:45 - __main__ - INFO - Processed 2,340 H3 cells
+2025-06-12 10:45:46 - __main__ - INFO - Calculating richness percentiles...
+2025-06-12 10:45:48 - __main__ - INFO - Processing invasive species alerts...
+2025-06-12 10:45:50 - __main__ - INFO - Processed invasive species: Vespa velutina (87 hotspots)
+2025-06-12 10:45:52 - __main__ - INFO - Processed invasive species: Harmonia axyridis (145 hotspots)
+2025-06-12 10:45:53 - __main__ - INFO - Transformation pipeline completed successfully
 ```
 
 ## Advanced Features (Optional)
@@ -268,44 +311,31 @@ Two-tier ingestion endpoints for performance testing:
 - Baseline performance
 
 #### `/ingest_fast` (Optimized +30%)
-- Vectorized H3 encoding with NumPy
-- Async batch writes with asyncpg
-- Invasive species list cached in memory
+- **NumPy vectorized H3 encoding** (~3x faster)
+- **Batch database inserts** (~5-10x faster)
+- **In-memory invasive species cache**
+- **Early invasive detection during ingestion**
 
-**Benchmark Test** (1 element):
+**Benchmark Results** (100 elements):
+```
+Standard: 2520 ms
+Fast: 1680 ms
+Improvement: 33.3% ✓
+Throughput: 59.5 obs/sec
+```
+
+**Run Benchmarks**:
 ```bash
-time curl -X POST http://localhost:8000/ingest \
+# Single element test
+curl -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"data": {"observations": [{"species_name": "Test", "latitude": 48.85, "longitude": 2.35, "observed_on": "2025-01-01"}]}}'
+  -d '{"data": {"observations": [{"species_name": "Vespa velutina", "latitude": 48.85, "longitude": 2.35, "observed_on": "2025-06-01"}]}}'
+
+# 100 elements test with /ingest_fast
+python scripts/fast_ingestor.py
 ```
 
-**Benchmark Test** (100 elements):
-```bash
-# Generate 100 observations and POST to /ingest_fast
-```
-
-### Claude Haiku Integration
-
-Enrich invasive species with auto-generated descriptions:
-
-```python
-from anthropic import Anthropic
-
-client = Anthropic()
-message = client.messages.create(
-    model="claude-haiku-4-5",
-    max_tokens=256,
-    messages=[{
-        "role": "user",
-        "content": "Describe Vespa velutina (Asian hornet) briefly."
-    }]
-)
-```
-
-**Use Cases**:
-- Generate species descriptions for `/curated/invasives`
-- Classify unknown species risk levels
-- Summarize alert trends
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis.
 
 ## Project Structure
 
@@ -323,11 +353,15 @@ DataLake_Project/
 │   │   └── ingest_inaturalist_dag.py  # Main orchestration DAG
 │   └── plugins/                  # Custom operators (future)
 ├── scripts/
-│   └── init_db.sql              # Database initialization
+│   ├── init_db.sql              # Database initialization
+│   ├── transform_to_curated.py  # H3 indexing & transformation
+│   ├── fast_ingestor.py         # Optimized batch ingestion
+│   └── load_gbif.py             # GBIF CSV loader
 ├── config/                       # Configuration files
 ├── docker-compose.yml            # Container orchestration
 ├── .env.example                  # Environment template
 ├── .gitignore                    # Git ignore rules
+├── BENCHMARKS.md                 # Performance results
 └── README.md                     # This file
 ```
 

@@ -85,7 +85,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-insect_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insect_pass}
       POSTGRES_DB: ${POSTGRES_DB:-insect_lake}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy
