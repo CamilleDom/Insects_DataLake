@@ -1,0 +1,107 @@
+version: '3.9'
+
+services:
+  # MinIO - S3-compatible storage for raw zone
+  minio:
+    image: minio/minio:latest
+    container_name: insect-lake-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - insect-lake-network
+
+  # PostgreSQL + PostGIS for staging and curated zones
+  postgres:
+    image: postgis/postgis:15-3.4
+    container_name: insect-lake-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-insect_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insect_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-insect_lake}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-insect_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - insect-lake-network
+
+  # Apache Airflow - Orchestration
+  airflow:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: insect-lake-airflow
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: 'false'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-insect_user}:${POSTGRES_PASSWORD:-insect_pass}@postgres:5432/${POSTGRES_DB:-insect_lake}
+      _AIRFLOW_SKIP_DB_MIGRATION: 'false'
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - airflow_logs:/opt/airflow/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: -c "airflow db upgrade && airflow webserver"
+    networks:
+      - insect-lake-network
+
+  # FastAPI - API Gateway
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: insect-lake-api
+    ports:
+      - "8000:8000"
+    environment:
+      MINIO_URL: minio:9000
+      MINIO_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-insect_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insect_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-insect_lake}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./api:/app
+    networks:
+      - insect-lake-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  minio_data:
+  postgres_data:
+  airflow_logs:
+
+networks:
+  insect-lake-network:
+    driver: bridge
