@@ -147,6 +147,26 @@ services:
       - insect-lake-network
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
+  streamlit:
+    build:
+      context: ./streamlit_app
+    container_name: insect-lake-streamlit
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-insect_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insect_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-insect_lake}
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./streamlit_app:/app
+    networks:
+      - insect-lake-network
+
 volumes:
   minio_data:
   postgres_data:

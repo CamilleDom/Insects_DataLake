@@ -37,23 +37,18 @@ exposant via une API REST.
                                           ┌──────────────────┐
                      Orchestration        │   CURATED ZONE   │
                      Apache Airflow       │  (PostgreSQL +   │
-                     (@hourly)            │   H3 indexing)   │
+                     (@hourly)            │   H3 indexing +  │
+                                          │   CNN classif.)  │
                                           └────────┬─────────┘
                                                    │
-                                                   ▼
-                                          ┌──────────────────┐
-                                          │   FastAPI Gateway│
-                                          │  /raw /staging   │
-                                          │  /curated /health│
-                                          │  /stats /ingest  │
-                                          └──────────────────┘
+                                    ┌──────────────┼──────────────┐
+                                    ▼                             ▼
+                          ┌──────────────────┐        ┌──────────────────┐
+                          │   FastAPI Gateway│        │  Streamlit Dashboard│
+                          │  /raw /staging   │        │  Carte, H3, CNN,   │
+                          │  /curated /health│        │  Statistiques      │
+                          └──────────────────┘        └──────────────────┘
 ```
-
-- **Raw** : MinIO (S3-compatible) — fichiers JSON bruts iNaturalist + GBIF
-- **Staging** : PostgreSQL/PostGIS — occurrences validées et normalisées
-- **Curated** : PostgreSQL — agrégats métier :
-  - `species_richness_h3` : richesse spécifique par cellule H3 (résolution 7)
-  - `invasive_hotspots` : alertes d'espèces invasives géolocalisées
 
 ## 📊 Sources de données
 
@@ -87,9 +82,9 @@ curl http://localhost:8000/health
 
 ### Services exposés
 
-| Service | URL |
-|---------|-----|
+
 | API | http://localhost:8000 (docs : `/docs`) |
+| **Dashboard Streamlit** | **http://localhost:8501** |
 | Airflow UI | http://localhost:8080 (admin/admin) |
 | MinIO Console | http://localhost:9001 (minioadmin/minioadmin) |
 | PostgreSQL | localhost:5432 |
@@ -178,6 +173,25 @@ GET /curated/classifications?limit=50&insect_only=true
 
 Voir [`ML.md`](ML.md) pour les détails techniques.
 
+## 📈 Dashboard interactif - Streamlit (bonus)
+
+Un dashboard web permet de visualiser l'ensemble du data lake sans écrire de
+requête SQL :
+
+- **🗺️ Carte des observations** : marqueurs géolocalisés avec popup photo
+- **⬡ Richesse spécifique (H3)** : carte 3D des hexagones colorés par
+  richesse en espèces (pydeck)
+- **🚨 Espèces invasives** : cartographie des zones à risque
+- **🧠 Classifications CNN** : galerie photo + distribution des classes prédites
+- **📊 Statistiques** : top espèces, timeline temporelle
+
+```bash
+make streamlit
+```
+
+Puis ouvrir : http://localhost:8501
+
+Voir [`DASHBOARD.md`](DASHBOARD.md) pour le détail des visualisations.
 
 ## 📂 Structure du projet
 
@@ -188,30 +202,36 @@ Voir [`ML.md`](ML.md) pour les détails techniques.
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── api/
-│   ├── main.py            # FastAPI app + endpoints
-│   ├── config.py          # Configuration (pydantic-settings)
-│   ├── db.py               # Pool Postgres + client MinIO
-│   ├── schemas.py          # Modèles Pydantic
+│   ├── main.py
+│   ├── config.py
+│   ├── db.py
+│   ├── schemas.py
+│   ├── requirements.txt
+│   └── Dockerfile
+├── streamlit_app/
+│   ├── app.py              # Dashboard interactif (carte, H3, CNN, stats)
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── scripts/
-│   ├── init_db.sql              # Schéma PostgreSQL (staging/curated/audit)
-│   ├── fast_ingestor.py         # Module d'ingestion optimisée
-│   ├── load_gbif.py             # Chargeur du dataset GBIF
-│   ├── transform_to_curated.py  # Pipeline staging -> curated
-│   └── validate_project.py      # Script de validation de la structure
+│   ├── init_db.sql
+│   ├── fast_ingestor.py
+│   ├── load_gbif.py
+│   ├── transform_to_curated.py
+│   ├── classify_images.py
+│   ├── image_classifier.py
+│   └── validate_project.py
 ├── tests/
 │   ├── test_integration.py
 │   ├── load_test_data.py
-│   └── fast_ingestor.py         # Benchmark /ingest vs /ingest_fast
+│   └── fast_ingestor.py
 ├── docker-compose.yml
 ├── Makefile
 ├── .env.example
 ├── README.md
 ├── QUICKSTART.md
 ├── ML.md
-├── BENCHMARKS.md
-└── .gitignore
+├── DASHBOARD.md
+└── BENCHMARKS.md
 ```
 
 ## 🛠️ Choix techniques
@@ -221,7 +241,9 @@ Voir [`ML.md`](ML.md) pour les détails techniques.
 - **H3 (Uber)** pour l'indexation spatiale (résolution 7 ≈ cellules de 5 km²)
 - **Airflow** pour l'orchestration (scheduling + XCom entre tâches)
 - **FastAPI** pour l'API Gateway (validation Pydantic, docs auto `/docs`)
-- **MobileNetV2 (torchvision)** pour la classification d'images en zone curated (voir `ML.md`)
+- **MobileNetV2 (torchvision)** pour la classification d'images en zone curated
+- **Streamlit + pydeck** pour le dashboard interactif (visualisation H3 3D,
+  cartes Folium, galerie photo)
 
 ## 🐛 Gestion des erreurs
 
@@ -264,3 +286,4 @@ docker-compose logs -f airflow-scheduler | grep classify_images
 ## 👤 Auteur
 
 Camille Dommergue — EFREI 2025-2026
+

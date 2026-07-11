@@ -1,4 +1,4 @@
-.PHONY: check-env db-shell db-reset db-stats shell-api classify-images airflow-list-dags airflow-dag-status docs help build up down logs test clean benchmark docs
+.PHONY: check-env db-shell db-reset db-stats shell-api classify-images airflow-list-dags airflow-dag-status streamlit docs help build up down logs test clean benchmark docs
 
 help:
 	@echo "Insect Lake Data Pipeline - Available Commands"
@@ -93,7 +93,9 @@ benchmark:
 classify-images:
 	@echo "Running CNN image classification (batch de 20)..."
 	docker-compose exec api python /scripts/classify_images.py 20
-
+streamlit:
+	docker-compose up -d streamlit
+	@echo "Dashboard disponible sur http://localhost:8501"
 # ── Database ──────────────────────────────────────────────────────────────────
 
 db-shell:

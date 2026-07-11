@@ -16,6 +16,13 @@ make load-test
 make transform
 curl http://localhost:8000/curated/hotspots | jq .
 ```
+Voir les résultats dans le dashboard
+
+```bash
+make streamlit
+```
+
+Ouvrir : **http://localhost:8501**
 
 Déclencher l'ingestion iNaturalist manuellement :
 
@@ -23,6 +30,13 @@ Déclencher l'ingestion iNaturalist manuellement :
 make airflow-trigger
 make logs-airflow
 ```
+Classifier des images par CNN
+
+```bash
+make classify-images
+curl "http://localhost:8000/curated/classifications?insect_only=true" | jq .
+```
+
 
 Lancer les tests :
 
