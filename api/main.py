@@ -222,7 +222,6 @@ async def get_staging_data(limit: int = 100, offset: int = 0):
 
 @app.get("/curated")
 async def get_curated_overview():
-    """Vue d'ensemble de la zone curated (exigé par la consigne)"""
     conn = None
     try:
         conn = get_db_connection()
@@ -231,15 +230,19 @@ async def get_curated_overview():
         h3_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM curated.invasive_hotspots")
         invasive_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM curated.image_classifications")
+        classification_count = cursor.fetchone()[0]
         cursor.close()
 
         return {
-            "description": "Curated zone - biodiversity insights (H3 richness + invasive alerts)",
+            "description": "Curated zone - biodiversity insights (H3 richness, invasive alerts, CNN classifications)",
             "h3_cells": h3_count,
             "invasive_hotspots": invasive_count,
+            "image_classifications": classification_count,
             "sub_endpoints": {
                 "hotspots": "/curated/hotspots",
-                "invasives": "/curated/invasives"
+                "invasives": "/curated/invasives",
+                "classifications": "/curated/classifications"
             }
         }
     except Exception as e:
@@ -333,6 +336,47 @@ async def get_invasive_alerts(risk_level: str = None):
     finally:
         _safe_release(conn)
 
+@app.get("/curated/classifications")
+async def get_image_classifications(limit: int = 50, insect_only: bool = False):
+    """Résultats de classification d'images par CNN (MobileNetV2 / ImageNet-1k)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        query = """
+            SELECT occurrence_id, species_name, image_url, predicted_class,
+                   confidence, is_likely_insect, classified_at
+            FROM curated.image_classifications
+        """
+        params = []
+        if insect_only:
+            query += " WHERE is_likely_insect = TRUE"
+        query += " ORDER BY classified_at DESC LIMIT %s"
+        params.append(limit)
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        cursor.close()
+
+        data = [
+            {
+                "occurrence_id": row[0],
+                "species_name": row[1],
+                "image_url": row[2],
+                "predicted_class": row[3],
+                "confidence": row[4],
+                "is_likely_insect": row[5],
+                "classified_at": row[6].isoformat() if row[6] else None
+            }
+            for row in rows
+        ]
+        return {"classifications": data}
+    except Exception as e:
+        logger.error(f"Failed to retrieve classifications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
 
 # ============================================
 # INGESTION (STANDARD & ADVANCED)

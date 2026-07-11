@@ -65,6 +65,27 @@ CREATE INDEX idx_invasive_species ON curated.invasive_hotspots(species_name);
 CREATE INDEX idx_invasive_risk ON curated.invasive_hotspots(invasive_risk);
 CREATE INDEX idx_invasive_updated ON curated.invasive_hotspots(updated_at);
 
+-- Ajout de l'URL de photo aux occurrences (alimentée par le DAG iNaturalist)
+ALTER TABLE staging.occurrences ADD COLUMN IF NOT EXISTS photo_url TEXT;
+
+-- Résultats de classification CNN (zone curated)
+CREATE TABLE IF NOT EXISTS curated.image_classifications (
+    id SERIAL PRIMARY KEY,
+    occurrence_id VARCHAR(255) NOT NULL UNIQUE REFERENCES staging.occurrences(id),
+    species_name VARCHAR(255),
+    image_url TEXT NOT NULL,
+    predicted_class VARCHAR(255),
+    confidence FLOAT,
+    is_likely_insect BOOLEAN,
+    top5_predictions TEXT,
+    classified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_image_class_species ON curated.image_classifications(species_name);
+CREATE INDEX IF NOT EXISTS idx_image_class_predicted ON curated.image_classifications(predicted_class);
+CREATE INDEX IF NOT EXISTS idx_image_class_insect ON curated.image_classifications(is_likely_insect);
+
+
 -- ============================================
 -- AUDIT & METRICS
 -- ============================================
@@ -101,3 +122,4 @@ INSERT INTO public.invasive_species_list (species_name, risk_level, description)
     ('Sciurus carolinensis', 'medium', 'Eastern gray squirrel - competes with native species'),
     ('Procyon lotor', 'medium', 'Raccoon - predator of birds and amphibians')
 ON CONFLICT (species_name) DO NOTHING;
+

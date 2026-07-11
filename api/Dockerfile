@@ -19,8 +19,8 @@ RUN pip install --upgrade pip setuptools wheel
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (index PyTorch CPU pour éviter les wheels CUDA, ~2Go)
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Copy application code
 COPY . .

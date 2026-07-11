@@ -42,6 +42,7 @@ services:
   airflow-init:
     build:
       context: ./airflow
+    image: insect-lake-airflow:local
     container_name: insect-lake-airflow-init
     environment: &airflow-common-env
       AIRFLOW_HOME: /opt/airflow
@@ -78,6 +79,7 @@ services:
   airflow-webserver:
     build:
       context: ./airflow
+    image: insect-lake-airflow:local 
     container_name: insect-lake-airflow-webserver
     restart: always
     ports:
@@ -98,6 +100,7 @@ services:
   airflow-scheduler:
     build:
       context: ./airflow
+    image: insect-lake-airflow:local 
     container_name: insect-lake-airflow-scheduler
     restart: always
     environment: *airflow-common-env
@@ -106,6 +109,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./scripts:/opt/airflow/scripts
       - airflow_logs:/opt/airflow/logs
+      - torch_cache:/home/airflow/.cache/torch
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -138,6 +142,7 @@ services:
       - ./api:/app
       - ./tests:/tests
       - ./scripts:/scripts
+      - torch_cache:/root/.cache/torch 
     networks:
       - insect-lake-network
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -146,6 +151,7 @@ volumes:
   minio_data:
   postgres_data:
   airflow_logs:
+  torch_cache:
 
 networks:
   insect-lake-network:

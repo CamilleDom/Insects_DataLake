@@ -142,57 +142,57 @@ class CuratedTransformer:
         cursor.close()
     
     def calculate_richness_percentiles(self):
-        """Calculate percentile rankings for richness"""
+        """Calcule le rang percentile de richesse pour chaque cellule H3"""
         logger.info("Calculating richness percentiles...")
-        
+
         cursor = self.conn.cursor()
-        
+
         try:
-            # Update percentiles using window function
+            # Correction : la version précédente utilisait une sous-requête
+            # corrélée qui limitait la fenêtre PERCENT_RANK() à une seule ligne
+            # à chaque fois (toujours 0.0 en résultat). Ici on calcule le rang
+            # sur l'ensemble de la table en une seule passe via une CTE.
             cursor.execute("""
-                UPDATE curated.species_richness_h3 SET
-                    richness_percentile = (
-                        SELECT PERCENT_RANK() OVER (ORDER BY richness_normalized) * 100
-                        FROM curated.species_richness_h3 r2
-                        WHERE r2.h3_cell = curated.species_richness_h3.h3_cell
-                    )
+                WITH ranked AS (
+                    SELECT h3_cell,
+                           PERCENT_RANK() OVER (ORDER BY richness_normalized) * 100 AS pct
+                    FROM curated.species_richness_h3
+                )
+                UPDATE curated.species_richness_h3 s
+                SET richness_percentile = r.pct
+                FROM ranked r
+                WHERE s.h3_cell = r.h3_cell
             """)
-            
+
             self.conn.commit()
             logger.info("Percentiles updated")
         except Exception as e:
+            self.conn.rollback()
             logger.error(f"Failed to calculate percentiles: {e}")
         finally:
             cursor.close()
-    
+
     def process_invasive_alerts(self):
-        """Detect and update invasive species hotspots"""
+        """Détecte et met à jour les hotspots d'espèces invasives"""
         logger.info("Processing invasive species alerts...")
-        
+
         cursor = self.conn.cursor(cursor_factory=RealDictCursor)
-        
+
         for species_name, risk_level in INVASIVE_SPECIES.items():
-            # Get all occurrences for this invasive species
             cursor.execute("""
-                SELECT 
-                    species_name,
-                    latitude,
-                    longitude,
-                    observed_on
+                SELECT species_name, latitude, longitude, observed_on
                 FROM staging.occurrences
                 WHERE LOWER(species_name) LIKE LOWER(%s)
                     AND observed_on IS NOT NULL
                 ORDER BY observed_on DESC
             """, (f"%{species_name}%",))
-            
+
             occurrences = cursor.fetchall()
-            
             if not occurrences:
                 continue
-            
-            # Group by H3 cell
+
             h3_invasive = defaultdict(lambda: {'dates': [], 'count': 0, 'lats': [], 'lons': []})
-            
+
             for occ in occurrences:
                 try:
                     h3_cell = h3.geo_to_h3(occ['latitude'], occ['longitude'], H3_RESOLUTION)
@@ -202,46 +202,49 @@ class CuratedTransformer:
                     h3_invasive[h3_cell]['lons'].append(occ['longitude'])
                 except Exception as e:
                     logger.warning(f"Failed to convert invasive occurrence: {e}")
-            
-            # Upsert invasive hotspots
+
             update_cursor = self.conn.cursor()
-            
+
             for h3_cell, data in h3_invasive.items():
                 lat_centroid = np.mean(data['lats']) if data['lats'] else None
                 lon_centroid = np.mean(data['lons']) if data['lons'] else None
                 first_seen = min(data['dates']) if data['dates'] else None
                 last_seen = max(data['dates']) if data['dates'] else None
-                
+
+                # Correction : l'id est une clé primaire NOT NULL sans défaut.
+                # On génère un id déterministe basé sur (h3_cell, species_name),
+                # cohérent avec la contrainte UNIQUE existante -> idempotent
+                # sur les ré-exécutions du pipeline.
+                record_id = f"{h3_cell}_{species_name}".replace(" ", "_").lower()
+
                 try:
                     update_cursor.execute("""
                         INSERT INTO curated.invasive_hotspots 
-                        (h3_cell, species_name, invasive_risk, alert_count, 
+                        (id, h3_cell, species_name, invasive_risk, alert_count, 
                          first_seen, last_seen, lat_centroid, lon_centroid)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (h3_cell, species_name) DO UPDATE SET
                             alert_count = EXCLUDED.alert_count,
                             last_seen = EXCLUDED.last_seen,
                             updated_at = CURRENT_TIMESTAMP
                     """, (
-                        h3_cell,
-                        species_name,
-                        risk_level,
-                        data['count'],
-                        first_seen,
-                        last_seen,
-                        lat_centroid,
-                        lon_centroid
+                        record_id, h3_cell, species_name, risk_level,
+                        data['count'], first_seen, last_seen, lat_centroid, lon_centroid
                     ))
+                    self.conn.commit()
                 except Exception as e:
+                    # Important : sans rollback ici, la transaction reste
+                    # "aborted" et fait échouer TOUTES les requêtes suivantes
+                    # (y compris pour les autres espèces), même si elles
+                    # n'ont aucun rapport avec l'erreur initiale.
+                    self.conn.rollback()
                     logger.error(f"Failed to insert invasive hotspot: {e}")
-            
-            self.conn.commit()
+
             update_cursor.close()
-            
             logger.info(f"Processed invasive species: {species_name} ({len(h3_invasive)} hotspots)")
-        
+
         cursor.close()
-    
+
     def run_full_transformation(self):
         """Execute complete transformation pipeline"""
         try:

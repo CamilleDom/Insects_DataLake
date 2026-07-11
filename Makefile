@@ -1,4 +1,4 @@
-.PHONY: check-env db-shell db-reset db-stats shell-api docs help build up down logs test clean benchmark docs
+.PHONY: check-env db-shell db-reset db-stats shell-api classify-images airflow-list-dags airflow-dag-status docs help build up down logs test clean benchmark docs
 
 help:
 	@echo "Insect Lake Data Pipeline - Available Commands"
@@ -21,6 +21,7 @@ help:
 	@echo "Testing & Validation:"
 	@echo "  make test           Run integration test suite"
 	@echo "  make benchmark      Run performance benchmarks"
+	@echo "  make classify-images  Run CNN classification on new photos (batch of 20)"
 	@echo ""
 	@echo "Database:"
 	@echo "  make db-shell       Open PostgreSQL shell"
@@ -51,8 +52,7 @@ logs-api:
 	docker-compose logs -f api
 
 logs-airflow:
-	docker-compose logs -f airflow
-
+	docker-compose logs -f airflow-scheduler airflow-webserver
 logs-db:
 	docker-compose logs -f postgres
 
@@ -74,9 +74,13 @@ transform:
 	docker-compose exec api python /scripts/transform_to_curated.py
 
 airflow-trigger:
-	docker-compose exec airflow airflow dags trigger ingest_inaturalist
+	docker-compose exec airflow-scheduler airflow dags trigger ingest_inaturalist
 	@echo "✓ DAG trigger requested. View logs with: make logs-airflow"
+airflow-list-dags:
+	docker-compose exec airflow-scheduler airflow dags list
 
+airflow-dag-status:
+	docker-compose exec airflow-scheduler airflow dags list-runs -d ingest_inaturalist
 # ── Testing ───────────────────────────────────────────────────────────────────
 
 test:
@@ -86,6 +90,9 @@ test:
 benchmark:
 	@echo "Running performance benchmarks..."
 	docker-compose exec api python /tests/fast_ingestor.py
+classify-images:
+	@echo "Running CNN image classification (batch de 20)..."
+	docker-compose exec api python /scripts/classify_images.py 20
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -96,9 +103,9 @@ db-reset:
 	@echo "WARNING: This will delete all data!"
 	@read -p "Are you sure? (yes/no): " confirm && \
 	[ "$$confirm" = "yes" ] && \
-	docker-compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -f /docker-entrypoint-initdb.d/init_db.sql && \
-	echo "✓ Database reset" || echo "Cancelled"
-
+	docker-compose down -v && \
+	docker-compose up -d && \
+	echo "✓ Database reset (fresh volume, init_db.sql re-executed)" || echo "Cancelled"
 db-stats:
 	docker-compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -c \
 		"SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size FROM pg_tables WHERE schemaname IN ('staging', 'curated') ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;"
