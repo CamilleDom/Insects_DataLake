@@ -1,473 +1,177 @@
-# Insect Lake - Data Lake for Biodiversity
+# 🐝 Insect Lake — Data Lake pour la biodiversité entomologique en France
 
-🐛 A comprehensive data lake for mapping insect biodiversity in France, detecting invasive species, and identifying biodiversity hotspots.
+Projet final — Data Lakes & Data Integration (EFREI 2025-2026)
 
-## Project Overview
+## 🎯 Objectif
 
-This project implements a complete data lake architecture (Raw → Staging → Curated) for processing insect observation data from two sources:
-- **iNaturalist API** (real-time observations)
-- **GBIF Dataset** (historical data)
+Data lake complet ingérant des observations d'insectes en France depuis deux
+sources hétérogènes (API temps réel + dataset fichier), les nettoyant, les
+enrichissant (indexation spatiale H3, détection d'espèces invasives) et les
+exposant via une API REST.
 
-### Key Features
-
-- 🏗️ **Multi-zone architecture**: Raw (MinIO) → Staging (PostgreSQL) → Curated (H3 indexing + invasive detection)
-- 🔄 **Automated orchestration**: Apache Airflow DAGs for scheduled ingestion
-- 🌍 **Geospatial indexing**: Uber H3 hexagon cells (~1 km²) for biodiversity hotspots
-- 🚨 **Invasive species alerts**: Automatic detection of invasive insect species
-- 📊 **FastAPI gateway**: RESTful endpoints for data access
-- 🤖 **AI enrichment**: Claude Haiku 4.5 integration for species descriptions
-- 🐳 **Docker Compose**: Complete containerized stack
-
-## Architecture
+## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      DATA SOURCES                               │
-│         iNaturalist API          GBIF Dataset (CSV)             │
-└────────────┬──────────────────────────┬──────────────────────────┘
-             │                          │
-             └──────────┬───────────────┘
-                        ▼
-        ┌─────────────────────────────────┐
-        │      AIRFLOW ORCHESTRATION      │
-        │  (DAGs: fetch, validate, load)  │
-        └────────────┬────────────────────┘
-                     ▼
-        ┌─────────────────────────────────┐
-        │   RAW ZONE (MinIO S3)           │
-        │ raw-inaturalist/ | raw-gbif/    │
-        └────────────┬────────────────────┘
-                     │
-                     ▼
-        ┌─────────────────────────────────┐
-        │  STAGING ZONE (PostgreSQL)      │
-        │ staging.occurrences (normalized)│
-        └────────────┬────────────────────┘
-                     │
-                     ▼
-        ┌─────────────────────────────────┐
-        │   CURATED ZONE (PostgreSQL)     │
-        │ ├─ species_richness_h3          │
-        │ └─ invasive_hotspots            │
-        └────────────┬────────────────────┘
-                     │
-                     ▼
-        ┌─────────────────────────────────┐
-        │    FastAPI GATEWAY (Port 8000)  │
-        │ /raw | /staging | /curated      │
-        │ /ingest | /ingest_fast          │
-        └─────────────────────────────────┘
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+│  iNaturalist│────▶│              │     │                  │
+│     API     │     │  RAW ZONE    │────▶│  STAGING ZONE    │
+└─────────────┘     │  (MinIO S3)  │     │  (PostgreSQL)    │
+┌─────────────┐     │              │     │                  │
+│  GBIF CSV   │────▶│              │     └────────┬─────────┘
+│  (fichier)  │     └──────────────┘              │
+└─────────────┘                                   ▼
+                                          ┌──────────────────┐
+                     Orchestration        │   CURATED ZONE   │
+                     Apache Airflow       │  (PostgreSQL +   │
+                     (@hourly)            │   H3 indexing)   │
+                                          └────────┬─────────┘
+                                                   │
+                                                   ▼
+                                          ┌──────────────────┐
+                                          │   FastAPI Gateway│
+                                          │  /raw /staging   │
+                                          │  /curated /health│
+                                          │  /stats /ingest  │
+                                          └──────────────────┘
 ```
 
-## Tech Stack
+- **Raw** : MinIO (S3-compatible) — fichiers JSON bruts iNaturalist + GBIF
+- **Staging** : PostgreSQL/PostGIS — occurrences validées et normalisées
+- **Curated** : PostgreSQL — agrégats métier :
+  - `species_richness_h3` : richesse spécifique par cellule H3 (résolution 7)
+  - `invasive_hotspots` : alertes d'espèces invasives géolocalisées
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Raw Storage** | MinIO (S3-compatible) | Store raw JSON/CSV files |
-| **Staging/Curated DB** | PostgreSQL + PostGIS | Normalized & enriched data |
-| **Geospatial Indexing** | Uber H3 | Hexagon-based hotspot mapping |
-| **Orchestration** | Apache Airflow 2.9.1 | DAG scheduling & monitoring |
-| **API Gateway** | FastAPI | RESTful endpoints |
-| **ML/Processing** | NumPy, scikit-learn, pandas | Data transformation |
-| **LLM Integration** | Anthropic Claude Haiku 4.5 | Species enrichment |
-| **Containerization** | Docker + Docker Compose | Local dev & deployment |
+## 📊 Sources de données
 
-## Quick Start
+| Source | Type | Fréquence |
+|--------|------|-----------|
+| [iNaturalist API](https://api.inaturalist.org) | API REST | Ingestion horaire via Airflow |
+| [GBIF](https://www.gbif.org) | Dataset fichier (CSV/TSV) | Chargement manuel (`make load-gbif`) |
 
-### Prerequisites
+## 🚀 Installation & lancement
 
-- Docker & Docker Compose (latest)
-- Python 3.11+ (for local development)
-- Git
+### Prérequis
+- Docker & Docker Compose
+- 4 Go RAM disponibles minimum
 
-### 1. Clone Repository
+### Démarrage rapide
 
 ```bash
-cd c:\Users\camil\Desktop\DataLake_Project
-git init
-git add .
-git commit -m "Initial commit: Insect Lake data lake structure"
-```
-
-### 2. Configure Environment
-
-```bash
-# Copy example environment file
+git clone <repo>
+cd insect-lake
 cp .env.example .env
-
-# Edit .env with your settings
-# Required: Add your ANTHROPIC_API_KEY
+make build
+make up
 ```
 
-### 3. Start Services
+Vérifier que tout tourne :
 
 ```bash
-# Build and start all services
-docker-compose up -d
-
-# Verify services are running
 docker-compose ps
+curl http://localhost:8000/health
 ```
 
-### 4. Initialize Database
+### Services exposés
+
+| Service | URL |
+|---------|-----|
+| API | http://localhost:8000 (docs : `/docs`) |
+| Airflow UI | http://localhost:8080 (admin/admin) |
+| MinIO Console | http://localhost:9001 (minioadmin/minioadmin) |
+| PostgreSQL | localhost:5432 |
+
+## 🔌 Endpoints API
+
+| Endpoint | Méthode | Description |
+|----------|---------|--------------|
+| `/health` | GET | État des services (MinIO, Postgres, API) |
+| `/stats` | GET | Métriques de remplissage (buckets + tables) |
+| `/raw` | GET | Liste des fichiers bruts (MinIO) |
+| `/staging` | GET | Données intermédiaires paginées |
+| `/curated` | GET | Vue d'ensemble zone curated |
+| `/curated/hotspots` | GET | Richesse spécifique par cellule H3 |
+| `/curated/invasives` | GET | Alertes espèces invasives |
+| `/ingest` | POST | Ingestion standard (niveau avancé) |
+| `/ingest_fast` | POST | Ingestion optimisée (niveau avancé) |
+| `/benchmark` | GET | Informations sur le benchmark |
+
+## 🧪 Tests & données de test
 
 ```bash
-# Wait for PostgreSQL to be ready, then initialize
-docker-compose exec postgres psql -U insect_user -d insect_lake -f /docker-entrypoint-initdb.d/01_init.sql
+make load-test         # Charge 10 observations de test
+make transform         # Lance la transformation staging -> curated
+make test               # Suite de tests d'intégration
+make benchmark          # Benchmark /ingest vs /ingest_fast
 ```
 
-### 5. Access Services
-
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| **MinIO Console** | http://localhost:9001 | minioadmin / minioadmin |
-| **Airflow UI** | http://localhost:8080 | admin / airflow |
-| **API Docs** | http://localhost:8000/docs | N/A |
-| **PostgreSQL** | localhost:5432 | insect_user / insect_pass |
-
-## API Endpoints
-
-### Health & Diagnostics
+## 📁 Chargement du dataset GBIF
 
 ```bash
-# Check service health
-GET /health
-
-# Get statistics
-GET /stats
+# Télécharger un export GBIF (occurrence.txt, format Darwin Core)
+make load-gbif CSV_PATH=/path/to/occurrence.txt
 ```
 
-### Raw Zone
+## ⚙️ Pipeline Airflow
 
-```bash
-# List raw files in MinIO
-GET /raw
-```
+Le DAG `ingest_inaturalist` (déclenché toutes les heures) exécute :
+1. `fetch_api` : récupère les observations depuis l'API iNaturalist → MinIO
+2. `validate_and_load_staging` : valide et charge dans `staging.occurrences`
+3. `transform_to_curated` : recalcule les agrégats H3 et les alertes invasives
 
-### Staging Zone
+Déclenchement manuel : `make airflow-trigger`
 
-```bash
-# Get paginated staging data
-GET /staging?limit=100&offset=0
-```
+## 🏎️ Niveau avancé : `/ingest` vs `/ingest_fast`
 
-### Curated Zone
+Voir [`BENCHMARKS.md`](BENCHMARKS.md) pour le détail des optimisations et les
+résultats mesurés (objectif : +30% de performance).
 
-```bash
-# Get biodiversity hotspots (richness percentile)
-GET /curated/hotspots?limit=50&min_percentile=75
-
-# Get invasive species alerts
-GET /curated/invasives?risk_level=high
-```
-
-### Data Ingestion
-
-```bash
-# Standard ingestion (1 element benchmark)
-POST /ingest
-{
-  "data": {
-    "observations": [
-      {
-        "species_name": "Vespa velutina",
-        "latitude": 48.85,
-        "longitude": 2.35,
-        "observed_on": "2025-06-01"
-      }
-    ]
-  }
-}
-
-# Fast ingestion (100+ elements, vectorized)
-POST /ingest_fast
-# Same payload as /ingest
-```
-
-## Data Sources
-
-### iNaturalist API
-
-- **Endpoint**: https://api.inaturalist.org/v1/observations
-- **Parameters**:
-  - `place_id=6753` (France)
-  - `taxon_id=47158` (Insecta class)
-  - `quality_grade=research,needs_id`
-  - Rate limit: 100 req/min
-
-### GBIF Dataset
-
-- **Download**: https://www.gbif.org/occurrence/download
-- **Filters**:
-  - Taxon: Insecta (class)
-  - Country: France
-  - Year: 2010+
-  - Format: CSV
-
-## Database Schema
-
-### Staging Zone
-
-```sql
-staging.occurrences
-├─ id (VARCHAR, PK)
-├─ species_name
-├─ latitude / longitude
-├─ observed_on
-├─ quality_grade
-├─ source (inaturalist | gbif)
-└─ raw_payload (JSONB)
-```
-
-### Curated Zone
-
-```sql
-curated.species_richness_h3
-├─ h3_cell (PK) - Uber H3 index resolution 7
-├─ species_count
-├─ richness_normalized = species_count / log(1 + obs_count)
-└─ richness_percentile
-
-curated.invasive_hotspots
-├─ id (UUID)
-├─ species_name
-├─ invasive_risk (high | medium | low)
-├─ alert_count
-├─ first_seen / last_seen
-└─ h3_cell
-```
-
-## Data Loading
-
-### Loading iNaturalist Data
-
-The Airflow DAG automatically fetches iNaturalist data:
-
-```bash
-# Trigger manually
-docker-compose exec airflow airflow dags trigger ingest_inaturalist
-
-# View logs
-docker-compose logs -f airflow
-```
-
-### Loading GBIF Dataset
-
-Download GBIF data and load via script:
-
-```bash
-# 1. Download from GBIF portal
-# https://www.gbif.org/occurrence/download
-# Select: Insecta class, France, 2010+ years, CSV format
-
-# 2. Extract ZIP and load occurrence.txt
-docker-compose exec api python /app/../scripts/load_gbif.py /path/to/occurrence.txt
-
-# Or from host
-python scripts/load_gbif.py /data/gbif/occurrence.txt
-```
-
-**Example Output**:
-```
-✓ Successfully loaded 50,000 records from GBIF
-  Skipped: 250, Errors: 10, Total processed: 50,260
-```
-
-### Transforming to Curated Zone
-
-After loading data to staging, transform to curated zone:
-
-```bash
-# Run transformation pipeline
-docker-compose exec api python /app/../scripts/transform_to_curated.py
-
-# What it does:
-# 1. Groups occurrences by H3 hexagon cells (resolution 7)
-# 2. Calculates species richness per cell
-# 3. Computes normalized richness: count / log(1 + observations)
-# 4. Detects invasive species hotspots
-# 5. Updates curated zone tables
-```
-
-**Example Output**:
-```
-2025-06-12 10:45:23 - __main__ - INFO - Processing species richness by H3 cells...
-2025-06-12 10:45:45 - __main__ - INFO - Processed 2,340 H3 cells
-2025-06-12 10:45:46 - __main__ - INFO - Calculating richness percentiles...
-2025-06-12 10:45:48 - __main__ - INFO - Processing invasive species alerts...
-2025-06-12 10:45:50 - __main__ - INFO - Processed invasive species: Vespa velutina (87 hotspots)
-2025-06-12 10:45:52 - __main__ - INFO - Processed invasive species: Harmonia axyridis (145 hotspots)
-2025-06-12 10:45:53 - __main__ - INFO - Transformation pipeline completed successfully
-```
-
-## Advanced Features (Optional)
-
-### Optimization Benchmarks
-
-Two-tier ingestion endpoints for performance testing:
-
-#### `/ingest` (Standard)
-- Single-row inserts
-- Baseline performance
-
-#### `/ingest_fast` (Optimized +30%)
-- **NumPy vectorized H3 encoding** (~3x faster)
-- **Batch database inserts** (~5-10x faster)
-- **In-memory invasive species cache**
-- **Early invasive detection during ingestion**
-
-**Benchmark Results** (100 elements):
-```
-Standard: 2520 ms
-Fast: 1680 ms
-Improvement: 33.3% ✓
-Throughput: 59.5 obs/sec
-```
-
-**Run Benchmarks**:
-```bash
-# Single element test
-curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"data": {"observations": [{"species_name": "Vespa velutina", "latitude": 48.85, "longitude": 2.35, "observed_on": "2025-06-01"}]}}'
-
-# 100 elements test with /ingest_fast
-python scripts/fast_ingestor.py
-```
-
-See [BENCHMARKS.md](BENCHMARKS.md) for detailed performance analysis.
-
-## Project Structure
+## 📂 Structure du projet
 
 ```
-DataLake_Project/
-├── api/                          # FastAPI application
-│   ├── main.py                   # Main app, endpoints
-│   ├── config.py                 # Settings management
-│   ├── db.py                     # DB & MinIO connections
-│   ├── schemas.py                # Pydantic models
-│   ├── requirements.txt           # Python dependencies
-│   └── Dockerfile                # API container
 ├── airflow/
-│   ├── dags/
-│   │   └── ingest_inaturalist_dag.py  # Main orchestration DAG
-│   └── plugins/                  # Custom operators (future)
+│   ├── dags/ingest_inaturalist_dag.py
+│   ├── plugins/
+│   ├── Dockerfile
+│   └── requirements.txt
+├── api/
+│   ├── main.py            # FastAPI app + endpoints
+│   ├── config.py          # Configuration (pydantic-settings)
+│   ├── db.py               # Pool Postgres + client MinIO
+│   ├── schemas.py          # Modèles Pydantic
+│   ├── requirements.txt
+│   └── Dockerfile
 ├── scripts/
-│   ├── init_db.sql              # Database initialization
-│   ├── transform_to_curated.py  # H3 indexing & transformation
-│   ├── fast_ingestor.py         # Optimized batch ingestion
-│   └── load_gbif.py             # GBIF CSV loader
-├── config/                       # Configuration files
-├── docker-compose.yml            # Container orchestration
-├── .env.example                  # Environment template
-├── .gitignore                    # Git ignore rules
-├── BENCHMARKS.md                 # Performance results
-└── README.md                     # This file
+│   ├── init_db.sql              # Schéma PostgreSQL (staging/curated/audit)
+│   ├── fast_ingestor.py         # Module d'ingestion optimisée
+│   ├── load_gbif.py             # Chargeur du dataset GBIF
+│   ├── transform_to_curated.py  # Pipeline staging -> curated
+│   └── validate_project.py      # Script de validation de la structure
+├── tests/
+│   ├── test_integration.py
+│   ├── load_test_data.py
+│   └── fast_ingestor.py         # Benchmark /ingest vs /ingest_fast
+├── docker-compose.yml
+├── Makefile
+└── .env.example
 ```
 
-## Development
+## 🛠️ Choix techniques
 
-### Run Locally (Without Docker)
+- **MinIO** pour la zone raw : compatible S3, léger, facile à opérer en local
+- **PostgreSQL + PostGIS** pour staging/curated : requêtes géospatiales natives
+- **H3 (Uber)** pour l'indexation spatiale (résolution 7 ≈ cellules de 5 km²)
+- **Airflow** pour l'orchestration (scheduling + XCom entre tâches)
+- **FastAPI** pour l'API Gateway (validation Pydantic, docs auto `/docs`)
 
-```bash
-# Create virtual environment
-python -m venv venv
-.\venv\Scripts\activate
+## 🐛 Gestion des erreurs
 
-# Install dependencies
-pip install -r api/requirements.txt
+- Toutes les routes retournent des codes HTTP appropriés (`4xx`/`5xx`) avec
+  message d'erreur explicite
+- Le pool de connexions PostgreSQL est correctement libéré (`close_db_connection`)
+  même en cas d'exception
+- Les scripts d'ingestion valident les coordonnées et gèrent les doublons
+  (`ON CONFLICT DO NOTHING`)
 
-# Set environment variables
-$env:POSTGRES_HOST = "localhost"
-$env:MINIO_URL = "localhost:9000"
+## 👤 Auteur
 
-# Run API
-cd api
-uvicorn main:app --reload
-```
-
-### Code Quality
-
-```bash
-# Format with Black
-black api/
-
-# Lint with Flake8
-flake8 api/ --max-line-length=120
-
-# Type check with Mypy
-mypy api/
-```
-
-## Monitoring & Troubleshooting
-
-### Check Service Logs
-
-```bash
-# API logs
-docker-compose logs -f api
-
-# Airflow logs
-docker-compose logs -f airflow
-
-# PostgreSQL logs
-docker-compose logs -f postgres
-
-# MinIO logs
-docker-compose logs -f minio
-```
-
-### Common Issues
-
-**MinIO bucket not found**:
-```bash
-docker-compose exec api python -c "from db import get_minio_client; get_minio_client()"
-```
-
-**PostgreSQL connection refused**:
-```bash
-# Wait for PostgreSQL startup
-docker-compose exec postgres pg_isready
-```
-
-**Airflow DAG not visible**:
-```bash
-docker-compose exec airflow airflow dags list
-```
-
-## Evaluation Criteria (EFREI Project)
-
-### Standard Level (16-20/20)
-
-- ✅ Three-zone architecture (Raw/Staging/Curated)
-- ✅ Robust transformation scripts with error handling
-- ✅ Reliable integration pipeline (Airflow DAG)
-- ✅ Complete API Gateway with all endpoints
-- ✅ Well-documented code and README
-
-### Advanced Level (Bonus)
-
-- 🔧 `/ingest` endpoint (manual data ingestion)
-- ⚡ `/ingest_fast` endpoint (+30% performance)
-- 📊 Documented benchmarks (1 & 100 elements)
-- 🎯 Creative optimizations (NumPy vectorization, async writes, caching)
-
-## Deliverables
-
-- [x] GitHub repository with full source code
-- [x] Technical documentation (README, architecture)
-- [x] Installation & build procedures
-- [ ] Performance benchmarks (to be completed)
-- [ ] Code comments (in progress)
-
-## License
-
-EFREI 2025-2026 - Data Lakes & Data Integration Project
-
-## Author
-
-Built for EFREI Data Engineering Specialization
-
----
-
-**Questions or issues?** Refer to the [official project brief](Documentation/insect_lake_reference.pdf) or consult [project guidelines](Documentation/Data_Lakes__Projet.pdf).
+Camille Dommergue — EFREI 2025-2026

@@ -1,4 +1,4 @@
-.PHONY: help build up down logs test clean benchmark docs
+.PHONY: check-env db-shell db-reset db-stats shell-api docs help build up down logs test clean benchmark docs
 
 help:
 	@echo "Insect Lake Data Pipeline - Available Commands"
@@ -33,9 +33,9 @@ help:
 	@echo "  make clean          Remove volumes and containers"
 
 build:
-	docker-compose build
+	docker compose build --no-cache --pull
 
-up:
+up: check-env
 	docker-compose up -d
 	@echo "Services starting... waiting for health checks..."
 	@sleep 10
@@ -56,53 +56,38 @@ logs-airflow:
 logs-db:
 	docker-compose logs -f postgres
 
+# ── Data Loading ──────────────────────────────────────────────────────────────
+
 load-test:
 	@echo "Loading test data (10 observations)..."
-	docker-compose exec api python -c "\
-	import sys; sys.path.insert(0, '/app'); \
-	from api.db import get_db_connection; \
-	conn = get_db_connection(); \
-	cursor = conn.cursor(); \
-	for i in range(10): \
-	    cursor.execute(\
-	        'INSERT INTO staging.occurrences (species_name, latitude, longitude, observed_on, source) VALUES (%s, %s, %s, NOW(), %s) ON CONFLICT DO NOTHING', \
-	        ('Vespa velutina', 48.8 + i*0.01, 2.3 + i*0.01, 'test') \
-	    ); \
-	conn.commit(); \
-	cursor.close(); \
-	conn.close(); \
-	print('✓ Loaded 10 test records')"
+	docker-compose exec api python /tests/load_test_data.py
 
 load-gbif:
 ifndef CSV_PATH
 	@echo "Error: CSV_PATH not set. Usage: make load-gbif CSV_PATH=/path/to/occurrence.txt"
 	@exit 1
 endif
-	docker-compose exec api python /app/../scripts/load_gbif.py $(CSV_PATH)
+	docker-compose exec api python /scripts/load_gbif.py $(CSV_PATH)
 
 transform:
 	@echo "Running H3 transformation to curated zone..."
-	docker-compose exec api python /app/../scripts/transform_to_curated.py
+	docker-compose exec api python /scripts/transform_to_curated.py
 
 airflow-trigger:
 	docker-compose exec airflow airflow dags trigger ingest_inaturalist
 	@echo "✓ DAG trigger requested. View logs with: make logs-airflow"
 
+# ── Testing ───────────────────────────────────────────────────────────────────
+
 test:
 	@echo "Running integration tests..."
-	docker-compose exec api python /app/../scripts/test_integration.py
+	docker-compose exec api python /tests/test_integration.py
 
 benchmark:
 	@echo "Running performance benchmarks..."
-	@echo ""
-	@echo "Test 1: Single element (baseline)"
-	curl -s -X POST http://localhost:8000/ingest \
-		-H "Content-Type: application/json" \
-		-d '{"data":{"observations":[{"species_name":"Vespa velutina","latitude":48.8566,"longitude":2.3522,"observed_on":"2025-06-01"}]}}' \
-		| python -m json.tool | grep -E "inserted|execution_time_ms|throughput"
-	@echo ""
-	@echo "Test 2: 100 elements optimized (/ingest_fast)"
-	docker-compose exec api python /app/../scripts/fast_ingestor.py
+	docker-compose exec api python /tests/fast_ingestor.py
+
+# ── Database ──────────────────────────────────────────────────────────────────
 
 db-shell:
 	docker-compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
@@ -117,6 +102,8 @@ db-reset:
 db-stats:
 	docker-compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -c \
 		"SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size FROM pg_tables WHERE schemaname IN ('staging', 'curated') ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;"
+
+# ── Dev ───────────────────────────────────────────────────────────────────────
 
 shell-api:
 	docker-compose exec api bash
@@ -139,4 +126,6 @@ check-env:
 		echo "Error: .env file not found. Creating from .env.example..."; \
 		cp .env.example .env; \
 		echo "✓ Created .env - please configure with your settings"; \
+	else \
+		echo "✓ .env already exists"; \
 	fi

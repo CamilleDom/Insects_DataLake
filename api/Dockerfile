@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     cmake \
+    ninja-build \
     python3-dev \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*

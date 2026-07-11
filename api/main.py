@@ -1,15 +1,14 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 import logging
+import time
 from datetime import datetime
 import sys
 import os
 
 from config import get_settings
-from db import get_db_connection, get_minio_client
-from schemas import HealthResponse, StatsResponse, IngestPayload
+from db import get_db_connection, close_db_connection, get_minio_client
+from schemas import HealthResponse, IngestPayload
 
-# Add scripts to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
 try:
@@ -17,11 +16,9 @@ try:
 except ImportError:
     FastIngestor = None
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
 app = FastAPI(
     title="Insect Lake API",
     description="Data Lake API for insect biodiversity in France",
@@ -30,82 +27,118 @@ app = FastAPI(
 
 settings = get_settings()
 
+_fast_ingestor_instance = None
+
+def get_fast_ingestor():
+    """Instancie FastIngestor une seule fois (réutilise le pool de connexions)"""
+    global _fast_ingestor_instance
+    if _fast_ingestor_instance is None and FastIngestor:
+        _fast_ingestor_instance = FastIngestor(
+            pg_host=settings.postgres_host,
+            pg_port=settings.postgres_port,
+            pg_user=settings.postgres_user,
+            pg_password=settings.postgres_password,
+            pg_db=settings.postgres_db
+        )
+    return _fast_ingestor_instance
+
+
+def _safe_release(conn):
+    """Libère une connexion vers le pool en la nettoyant si besoin"""
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    close_db_connection(conn)
+
+
 # ============================================
 # HEALTH & DIAGNOSTICS
 # ============================================
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check health status of all services"""
-    status = {
-        "minio": "healthy",
-        "postgres": "healthy",
-        "api": "healthy"
-    }
-    
+    status = {"minio": "healthy", "postgres": "healthy", "api": "healthy"}
+
     try:
-        # Test MinIO connection
         client = get_minio_client()
         client.list_buckets()
     except Exception as e:
         logger.error(f"MinIO health check failed: {e}")
         status["minio"] = "unhealthy"
-    
+
+    conn = None
     try:
-        # Test PostgreSQL connection
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.close()
-        conn.close()
     except Exception as e:
         logger.error(f"PostgreSQL health check failed: {e}")
         status["postgres"] = "unhealthy"
-    
+    finally:
+        _safe_release(conn)
+
     overall_status = "healthy" if all(v == "healthy" for v in status.values()) else "degraded"
-    
+
     return HealthResponse(
         status=overall_status,
         timestamp=datetime.utcnow().isoformat(),
         services=status
     )
 
+
 @app.get("/stats")
 async def get_stats():
-    """Get statistics about data lake content"""
+    """Métriques de remplissage : buckets MinIO (raw) + tables Postgres (staging/curated)"""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Count records by zone
+
         cursor.execute("SELECT COUNT(*) FROM staging.occurrences")
         staging_count = cursor.fetchone()[0]
-        
+
         cursor.execute("SELECT COUNT(*) FROM curated.species_richness_h3")
         curated_h3_count = cursor.fetchone()[0]
-        
+
         cursor.execute("SELECT COUNT(*) FROM curated.invasive_hotspots")
         invasive_count = cursor.fetchone()[0]
-        
-        # Last ingestion
-        cursor.execute("""
-            SELECT MAX(ingested_at) FROM staging.occurrences
-        """)
+
+        cursor.execute("SELECT MAX(ingested_at) FROM staging.occurrences")
         last_ingestion = cursor.fetchone()[0]
-        
+
+        cursor.execute("SELECT COUNT(DISTINCT source) FROM staging.occurrences")
         cursor.close()
-        conn.close()
-        
-        return StatsResponse(
-            timestamp=datetime.utcnow().isoformat(),
-            staging_occurrences=staging_count,
-            curated_h3_cells=curated_h3_count,
-            invasive_hotspots=invasive_count,
-            last_ingestion=last_ingestion.isoformat() if last_ingestion else None
-        )
+
+        # Raw zone (MinIO)
+        client = get_minio_client()
+        raw_inat_count = sum(1 for _ in client.list_objects("raw-inaturalist", recursive=True))
+        raw_gbif_count = sum(1 for _ in client.list_objects("raw-gbif", recursive=True))
+
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "raw": {
+                "inaturalist_files": raw_inat_count,
+                "gbif_files": raw_gbif_count,
+            },
+            "staging": {
+                "occurrences": staging_count,
+                "last_ingestion": last_ingestion.isoformat() if last_ingestion else None
+            },
+            "curated": {
+                "h3_cells": curated_h3_count,
+                "invasive_hotspots": invasive_count
+            }
+        }
     except Exception as e:
         logger.error(f"Stats query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
+
 
 # ============================================
 # RAW ZONE
@@ -113,35 +146,29 @@ async def get_stats():
 
 @app.get("/raw")
 async def list_raw_files():
-    """List files in raw zone (MinIO)"""
     try:
         client = get_minio_client()
-        
-        files = {
-            "inaturalist": [],
-            "gbif": []
-        }
-        
-        # List iNaturalist files
+        files = {"inaturalist": [], "gbif": []}
+
         for obj in client.list_objects("raw-inaturalist", recursive=True):
             files["inaturalist"].append({
                 "name": obj.object_name,
                 "size": obj.size,
                 "last_modified": obj.last_modified.isoformat() if obj.last_modified else None
             })
-        
-        # List GBIF files
+
         for obj in client.list_objects("raw-gbif", recursive=True):
             files["gbif"].append({
                 "name": obj.object_name,
                 "size": obj.size,
                 "last_modified": obj.last_modified.isoformat() if obj.last_modified else None
             })
-        
+
         return {"raw_files": files}
     except Exception as e:
         logger.error(f"Failed to list raw files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================
 # STAGING ZONE
@@ -149,28 +176,24 @@ async def list_raw_files():
 
 @app.get("/staging")
 async def get_staging_data(limit: int = 100, offset: int = 0):
-    """Get paginated staging data"""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT id, species_name, latitude, longitude, observed_on, 
+            SELECT id, species_name, latitude, longitude, observed_on,
                    quality_grade, source, ingested_at
             FROM staging.occurrences
             ORDER BY ingested_at DESC
             LIMIT %s OFFSET %s
         """, (limit, offset))
-        
         rows = cursor.fetchall()
-        
-        # Get total count
+
         cursor.execute("SELECT COUNT(*) FROM staging.occurrences")
         total = cursor.fetchone()[0]
-        
         cursor.close()
-        conn.close()
-        
+
         data = [
             {
                 "id": row[0],
@@ -184,28 +207,55 @@ async def get_staging_data(limit: int = 100, offset: int = 0):
             }
             for row in rows
         ]
-        
-        return {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "data": data
-        }
+
+        return {"total": total, "limit": limit, "offset": offset, "data": data}
     except Exception as e:
         logger.error(f"Failed to retrieve staging data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
+
 
 # ============================================
 # CURATED ZONE
 # ============================================
 
-@app.get("/curated/hotspots")
-async def get_biodiversity_hotspots(limit: int = 50, min_percentile: float = 0):
-    """Get species richness hotspots sorted by richness percentile"""
+@app.get("/curated")
+async def get_curated_overview():
+    """Vue d'ensemble de la zone curated (exigé par la consigne)"""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+        cursor.execute("SELECT COUNT(*) FROM curated.species_richness_h3")
+        h3_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM curated.invasive_hotspots")
+        invasive_count = cursor.fetchone()[0]
+        cursor.close()
+
+        return {
+            "description": "Curated zone - biodiversity insights (H3 richness + invasive alerts)",
+            "h3_cells": h3_count,
+            "invasive_hotspots": invasive_count,
+            "sub_endpoints": {
+                "hotspots": "/curated/hotspots",
+                "invasives": "/curated/invasives"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to retrieve curated overview: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
+
+
+@app.get("/curated/hotspots")
+async def get_biodiversity_hotspots(limit: int = 50, min_percentile: float = 0):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
         cursor.execute("""
             SELECT h3_cell, species_count, obs_count, richness_normalized,
                    richness_percentile, lat_centroid, lon_centroid, last_observed
@@ -214,11 +264,9 @@ async def get_biodiversity_hotspots(limit: int = 50, min_percentile: float = 0):
             ORDER BY richness_percentile DESC
             LIMIT %s
         """, (min_percentile, limit))
-        
         rows = cursor.fetchall()
         cursor.close()
-        conn.close()
-        
+
         data = [
             {
                 "h3_cell": row[0],
@@ -232,19 +280,21 @@ async def get_biodiversity_hotspots(limit: int = 50, min_percentile: float = 0):
             }
             for row in rows
         ]
-        
         return {"hotspots": data}
     except Exception as e:
         logger.error(f"Failed to retrieve hotspots: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
+
 
 @app.get("/curated/invasives")
 async def get_invasive_alerts(risk_level: str = None):
-    """Get invasive species alerts, optionally filtered by risk level"""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         if risk_level:
             cursor.execute("""
                 SELECT h3_cell, species_name, invasive_risk, alert_count,
@@ -260,11 +310,9 @@ async def get_invasive_alerts(risk_level: str = None):
                 FROM curated.invasive_hotspots
                 ORDER BY last_seen DESC
             """)
-        
         rows = cursor.fetchall()
         cursor.close()
-        conn.close()
-        
+
         data = [
             {
                 "h3_cell": row[0],
@@ -278,11 +326,13 @@ async def get_invasive_alerts(risk_level: str = None):
             }
             for row in rows
         ]
-        
         return {"invasive_alerts": data}
     except Exception as e:
         logger.error(f"Failed to retrieve invasive alerts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
+
 
 # ============================================
 # INGESTION (STANDARD & ADVANCED)
@@ -290,7 +340,6 @@ async def get_invasive_alerts(risk_level: str = None):
 
 @app.get("/benchmark")
 async def get_benchmark_info():
-    """Get benchmark comparison information"""
     return {
         "title": "Insect Lake Ingestion Benchmark",
         "description": "Compare /ingest (standard) vs /ingest_fast (optimized)",
@@ -301,40 +350,32 @@ async def get_benchmark_info():
             "Early invasive detection while writing"
         ],
         "target_improvement": "30% performance gain",
-        "test_cases": [
-            {
-                "name": "Single element",
-                "description": "Baseline: single observation"
-            },
-            {
-                "name": "100 elements",
-                "description": "Batch: 100 observations"
-            }
-        ],
         "endpoints": {
             "/ingest": "Standard ingestion (row-by-row)",
             "/ingest_fast": "Optimized ingestion (vectorized)"
         }
     }
 
+
 @app.post("/ingest")
 async def ingest_observations(payload: IngestPayload):
     """Standard ingestion endpoint for manual observation data"""
+    start_time = time.time()
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         success_count = 0
-        
         for obs in payload.data.observations:
             try:
                 cursor.execute("""
-                    INSERT INTO staging.occurrences 
+                    INSERT INTO staging.occurrences
                     (id, species_name, latitude, longitude, observed_on, source)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO NOTHING
                 """, (
-                    f"manual_{obs.species_name}_{obs.latitude}_{obs.longitude}",
+                    f"manual_{obs.species_name}_{obs.latitude}_{obs.longitude}_{obs.observed_on}",
                     obs.species_name,
                     obs.latitude,
                     obs.longitude,
@@ -344,47 +385,32 @@ async def ingest_observations(payload: IngestPayload):
                 success_count += 1
             except Exception as e:
                 logger.error(f"Failed to insert observation: {e}")
-        
+
         conn.commit()
         cursor.close()
-        conn.close()
-        
+
+        execution_time_ms = (time.time() - start_time) * 1000
+
         return {
             "status": "success",
             "inserted": success_count,
             "total": len(payload.data.observations),
+            "execution_time_ms": execution_time_ms,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
         logger.error(f"Ingestion failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _safe_release(conn)
 
 @app.post("/ingest_fast")
 async def ingest_observations_fast(payload: IngestPayload):
-    """
-    Optimized ingestion endpoint (vectorized H3 encoding, batch writes)
-    
-    Optimization strategies:
-    - NumPy vectorized H3 encoding (~3x faster than row-by-row)
-    - Batch inserts (1000 records per transaction)
-    - Early invasive species detection
-    - In-memory invasive species cache
-    
-    Target: +30% performance improvement over /ingest
-    """
-    if not FastIngestor:
+    ingestor = get_fast_ingestor()
+    if not ingestor:
         raise HTTPException(status_code=503, detail="FastIngestor module not available")
-    
+
     try:
-        ingestor = FastIngestor(
-            pg_host=settings.postgres_host,
-            pg_port=settings.postgres_port,
-            pg_user=settings.postgres_user,
-            pg_password=settings.postgres_password,
-            pg_db=settings.postgres_db
-        )
-        
-        # Convert Pydantic models to dicts for processing
         observations_dicts = [
             {
                 'species_name': obs.species_name,
@@ -394,9 +420,9 @@ async def ingest_observations_fast(payload: IngestPayload):
             }
             for obs in payload.data.observations
         ]
-        
+
         result = ingestor.ingest_with_early_detection(observations_dicts)
-        
+
         return {
             "status": "success",
             "inserted": result['inserted'],
@@ -407,15 +433,41 @@ async def ingest_observations_fast(payload: IngestPayload):
             "throughput_obs_per_sec": (len(payload.data.observations) / (result['execution_time_ms'] / 1000)) if result['execution_time_ms'] > 0 else 0,
             "detected_invasives": result.get('detected_invasives', {}),
             "timestamp": datetime.utcnow().isoformat(),
-            "optimization": "NumPy vectorized H3 + batch writes"
+            "optimization": "Persistent connection pool + batch insert (execute_values)"
         }
     except Exception as e:
         logger.error(f"Fast ingestion failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.on_event("startup")
+async def startup_event():
+    """
+    Pré-chauffe les pools de connexions au démarrage du serveur, plutôt
+    que de laisser la première requête HTTP payer le coût de création
+    du pool (connexions TCP + authentification PostgreSQL).
+    """
+    logger.info("Warming up connection pools...")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        close_db_connection(conn)
+        logger.info("Standard DB pool warmed up")
+    except Exception as e:
+        logger.warning(f"Failed to warm up standard pool: {e}")
+
+    try:
+        ingestor = get_fast_ingestor()
+        if ingestor:
+            conn = ingestor._get_connection()
+            ingestor._release_connection(conn)
+            logger.info("FastIngestor connection pool warmed up")
+    except Exception as e:
+        logger.warning(f"Failed to warm up fast ingestor pool: {e}")
+
 @app.get("/")
 async def root():
-    """API information"""
     return {
         "name": "Insect Lake API",
         "version": "0.1.0",

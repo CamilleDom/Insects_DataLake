@@ -1,6 +1,5 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.operators.postgres import PostgresOperator
 from datetime import datetime, timedelta
 import logging
 
@@ -186,7 +185,32 @@ def validate_and_load_staging(**context):
         logger.error(f"Failed to validate and load: {e}")
         raise
 
-# Define tasks
+def run_transformation(**context):
+    """Transforme staging -> curated (H3 richness + invasive hotspots)"""
+    import sys
+    sys.path.insert(0, '/opt/airflow/scripts')
+    import os
+    from transform_to_curated import CuratedTransformer
+
+    logger.info("Starting staging -> curated transformation...")
+
+    transformer = CuratedTransformer(
+        pg_host=os.getenv('POSTGRES_HOST', 'postgres'),
+        pg_port=int(os.getenv('POSTGRES_PORT', '5432')),
+        pg_user=os.getenv('POSTGRES_USER', 'insect_user'),
+        pg_password=os.getenv('POSTGRES_PASSWORD', 'insect_pass'),
+        pg_db=os.getenv('POSTGRES_DB', 'insect_lake')
+    )
+
+    try:
+        success = transformer.run_full_transformation()
+        if not success:
+            raise Exception("Transformation to curated failed")
+        logger.info("Transformation completed successfully")
+    finally:
+        transformer.close()
+
+
 fetch_task = PythonOperator(
     task_id='fetch_api',
     python_callable=fetch_inaturalist_api,
@@ -199,5 +223,11 @@ validate_task = PythonOperator(
     dag=dag,
 )
 
-# DAG dependencies
-fetch_task >> validate_task
+transform_task = PythonOperator(
+    task_id='transform_to_curated',
+    python_callable=run_transformation,
+    dag=dag,
+)
+
+# Pipeline complète : raw -> staging -> curated
+fetch_task >> validate_task >> transform_task

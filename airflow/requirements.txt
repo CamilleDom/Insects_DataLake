@@ -1,0 +1,5 @@
+requests==2.32.3
+minio==7.2.7
+psycopg2-binary==2.9.9
+h3==3.7.6
+numpy==1.26.4

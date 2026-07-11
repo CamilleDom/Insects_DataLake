@@ -1,72 +1,28 @@
-# Environment & Secrets
-.env
-.env.local
-.env.*.local
-
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-.pytest_cache/
-
-# Virtual environments
+.venv/
 venv/
-ENV/
-env/
-.venv
+
+# Env
+.env
+
+# Docker
+postgres_data/
+minio_data/
+airflow_logs/
+
+# Airflow
+airflow/logs/
+*.log
+
+# OS
+.DS_Store
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
 
-# Docker
-docker-compose.override.yml
-.dockerignore
-
-# Logs
-logs/
-*.log
-airflow_logs/
-
-# Data
-data/
-minio_data/
-postgres_data/
-
-# Airflow
-airflow/logs/
-airflow/plugins/__pycache__/
-
-# Credentials
-secrets/
-*.pem
-*.key
-
-# Dependencies
-node_modules/
-coverage/
-*.envs
+# Test artifacts
+tests/benchmark_results.json

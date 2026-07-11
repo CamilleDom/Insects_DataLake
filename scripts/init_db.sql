@@ -48,7 +48,7 @@ CREATE INDEX idx_richness_h3_updated ON curated.species_richness_h3(updated_at);
 
 -- Table 2: Invasive species hotspots
 CREATE TABLE IF NOT EXISTS curated.invasive_hotspots (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id VARCHAR(255) PRIMARY KEY,
     h3_cell VARCHAR(15) NOT NULL,
     species_name VARCHAR(255) NOT NULL,
     invasive_risk VARCHAR(50),  -- 'high', 'medium', 'low'
@@ -71,7 +71,7 @@ CREATE INDEX idx_invasive_updated ON curated.invasive_hotspots(updated_at);
 CREATE SCHEMA IF NOT EXISTS audit;
 
 CREATE TABLE IF NOT EXISTS audit.ingestion_log (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id VARCHAR(255) PRIMARY KEY,
     source VARCHAR(50),
     status VARCHAR(50),  -- 'success', 'failed'
     record_count INT,

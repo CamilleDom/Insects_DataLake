@@ -1,7 +1,4 @@
-version: '3.9'
-
 services:
-  # MinIO - S3-compatible storage for raw zone
   minio:
     image: minio/minio:latest
     container_name: insect-lake-minio
@@ -22,7 +19,6 @@ services:
     networks:
       - insect-lake-network
 
-  # PostgreSQL + PostGIS for staging and curated zones
   postgres:
     image: postgis/postgis:15-3.4
     container_name: insect-lake-postgres
@@ -43,32 +39,80 @@ services:
     networks:
       - insect-lake-network
 
-  # Apache Airflow - Orchestration
-  airflow:
-    image: apache/airflow:2.9.1-python3.11
-    container_name: insect-lake-airflow
-    ports:
-      - "8080:8080"
-    environment:
+  airflow-init:
+    build:
+      context: ./airflow
+    container_name: insect-lake-airflow-init
+    environment: &airflow-common-env
       AIRFLOW_HOME: /opt/airflow
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: 'false'
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-insect_user}:${POSTGRES_PASSWORD:-insect_pass}@postgres:5432/${POSTGRES_DB:-insect_lake}
-      _AIRFLOW_SKIP_DB_MIGRATION: 'false'
+      MINIO_URL: minio:9000
+      MINIO_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-insect_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insect_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-insect_lake}
+      INATURALIST_PLACE_ID: ${INATURALIST_PLACE_ID:-6753}
+      INATURALIST_TAXON_ID: ${INATURALIST_TAXON_ID:-47158}
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
       - airflow_logs:/opt/airflow/logs
     depends_on:
       postgres:
         condition: service_healthy
     entrypoint: /bin/bash
-    command: -c "airflow db upgrade && airflow webserver"
+    command: >
+      -c "airflow db upgrade &&
+          airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
     networks:
       - insect-lake-network
 
-  # FastAPI - API Gateway
+  airflow-webserver:
+    build:
+      context: ./airflow
+    container_name: insect-lake-airflow-webserver
+    restart: always
+    ports:
+      - "8080:8080"
+    environment: *airflow-common-env
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+      - airflow_logs:/opt/airflow/logs
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    networks:
+      - insect-lake-network
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+    container_name: insect-lake-airflow-scheduler
+    restart: always
+    environment: *airflow-common-env
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+      - airflow_logs:/opt/airflow/logs
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    networks:
+      - insect-lake-network
+
   api:
     build:
       context: ./api
@@ -92,6 +136,8 @@ services:
         condition: service_healthy
     volumes:
       - ./api:/app
+      - ./tests:/tests
+      - ./scripts:/scripts
     networks:
       - insect-lake-network
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
